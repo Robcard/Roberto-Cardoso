@@ -1,0 +1,135 @@
+################################################
+#                                              #
+# Gera o desconto do beiral da edificacao      #
+# com base em um campo de distancia em metros  #
+# e a linha dos lotes                          #
+#                                              #
+################################################
+
+import arcpy
+import os
+
+
+edif = arcpy.GetParameterAsText(0)
+desconto = arcpy.GetParameterAsText(1)
+lote = arcpy.GetParameterAsText(2)
+output = arcpy.GetParameterAsText(3)
+
+#Confere a existencia da pasta para os arquivos temporarios e cria caso precise
+tmpfold = r'C:\tmp'
+if os.path.exists(tmpfold) == False:
+    os.makedirs(tmpfold)
+
+#Define os arquivos temporario(precisam estar em uma pasta registrada no server para publicacao)
+ediflinha = tmpfold + r'\ediflinha.shp'
+edifbuff = tmpfold + r'\edifbuff.shp'
+edifbuff1 = tmpfold + r'\edifbuff1.shp'
+
+#apaga os arquivos temporarios se ja existirem
+arcpy.Delete_management(ediflinha)
+arcpy.Delete_management(edifbuff)
+arcpy.Delete_management(edifbuff1)
+
+#Cria a linha que sera usada pra gerar o buffer
+arcpy.FeatureToLine_management([edif, lote], ediflinha)
+
+#Deleta as linhas de casas geminadas e coladas no muro do lote
+try:
+    arcpy.MakeFeatureLayer_management(ediflinha, "linhaedicao")
+    arcpy.MakeFeatureLayer_management(edif, "edifedicao")
+    arcpy.MakeFeatureLayer_management(lote, "lot")
+    
+    #Adiciona o campo de sobreposicao na linha
+    arcpy.AddField_management(ediflinha, "fd_sbr", "LONG")
+    
+    linhaedicao = "linhaedicao"
+    edifedicao = "edifedicao"
+    lot = "lot"
+    
+    #Deleta as linhas que tocam o lote
+    arcpy.SelectLayerByLocation_management(linhaedicao,"SHARE_A_LINE_SEGMENT_WITH", lot, '', "NEW_SELECTION")
+    arcpy.DeleteFeatures_management(linhaedicao)
+    arcpy.SelectLayerByAttribute_management(linhaedicao, "CLEAR_SELECTION")
+    
+    with arcpy.da.SearchCursor(linhaedicao, ["FID"])as cursor:
+    
+        for row in cursor:
+            
+            arcpy.SelectLayerByAttribute_management(linhaedicao, "CLEAR_SELECTION")
+            arcpy.SelectLayerByAttribute_management(edifedicao, "CLEAR_SELECTION")
+            
+            arcpy.SelectLayerByAttribute_management(linhaedicao, "NEW_SELECTION","FID = {}".format(row[0]))
+            arcpy.SelectLayerByLocation_management(edifedicao,"SHARE_A_LINE_SEGMENT_WITH", linhaedicao, '', "NEW_SELECTION")
+            
+            sobreposicao = arcpy.GetCount_management(edifedicao)
+            sobrep = long(str(sobreposicao))
+            
+            #so funciona por conta da selecao na linhaedicao
+            with arcpy.da.UpdateCursor(linhaedicao, "fd_sbr")as cur:    
+                for row in cur:
+                    row[0] = sobrep
+                    cur.updateRow(row)
+
+            del cur
+    del cursor
+    
+    arcpy.SelectLayerByAttribute_management(linhaedicao, "CLEAR_SELECTION")
+    arcpy.SelectLayerByAttribute_management(edifedicao, "CLEAR_SELECTION")
+   
+    with arcpy.da.UpdateCursor(linhaedicao, "fd_sbr")as cur:            
+        for row in cur:
+            if row[0] > 1:                    
+                cur.deleteRow()
+    del cur
+
+except Exception:
+    e = sys.exc_info()[1]
+    print(e.args[0])
+    print "---"
+    print arcpy.GetMessages()   
+    
+
+
+
+#Cria o buffer que sera usado para cortar a edificacao
+arcpy.Buffer_analysis(linhaedicao, edifbuff, str(desconto), "RIGHT", "ROUND", "ALL",'', "GEODESIC")
+
+
+#Deleta o buffer que invade as edificacoes confrontantes
+arcpy.FeatureToPolygon_management([edifbuff, edif], edifbuff1)
+
+try:
+    
+    
+    arcpy.MakeFeatureLayer_management(edifbuff1, "buff1")
+    buff1 = "buff1"
+    
+    #separa somente os poligonos que estão dentro do buffer
+    arcpy.SelectLayerByLocation_management(buff1, "WITHIN_CLEMENTINI",edifbuff, '',"NEW_SELECTION","INVERT")
+    arcpy.DeleteFeatures_management(buff1)
+    
+    #separa os poligono que compartilham um segmento de linha com a linha do buffer
+    arcpy.SelectLayerByLocation_management(buff1,"SHARE_A_LINE_SEGMENT_WITH", linhaedicao, '', "NEW_SELECTION", "INVERT")
+    arcpy.DeleteFeatures_management(buff1)
+    
+except Exception:
+    e = sys.exc_info()[1]
+    print(e.args[0])
+    print "---"
+    print arcpy.GetMessages()
+
+
+
+
+#Gera a edificacao descontada
+arcpy.Erase_analysis(edif, buff1, output)
+
+
+#Deleta os arquivos temporarios
+arcpy.Delete_management(ediflinha)
+arcpy.Delete_management(edifbuff)
+arcpy.Delete_management(edifbuff1)
+arcpy.Delete_management(lot)
+arcpy.Delete_management("linhaedicao")
+arcpy.Delete_management("edifedicao")
+arcpy.Delete_management("buff1")
